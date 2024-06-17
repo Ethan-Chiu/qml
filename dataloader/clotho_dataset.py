@@ -38,7 +38,9 @@ class ClothoDataset(Dataset):
 
         # Randomly select one of the captions
         captions = self.data.iloc[idx, 1:6].values
-        caption = random.choice(captions)
+        index = random.randint(0, len(captions) - 1)
+        caption = captions[index]
+        caption_id = f"{audio_file[:-4]}_{index}"
 
-        return str(audio_path), caption
+        return str(audio_path), caption, caption_id
     
