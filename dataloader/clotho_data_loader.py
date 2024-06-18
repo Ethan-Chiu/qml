@@ -2,6 +2,7 @@ from typing import Callable, Union, Tuple, AnyStr, Optional
 from functools import partial
 from pathlib import Path
 
+from torch.utils.data import random_split
 from torch.utils.data.dataloader import DataLoader
 
 from .clotho_dataset import ClothoDataset
@@ -35,11 +36,25 @@ def get_clotho_loader(data_dir: Path,
 
     collate_fn = clotho_collate_fn
     
-    return DataLoader(
-        dataset=dataset, 
+    train_size = int(0.9 * len(dataset))
+    test_size = len(dataset) - train_size
+    train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+
+    train_dataloader = DataLoader(
+        dataset=train_dataset, 
         batch_size=batch_size,
         shuffle=shuffle, 
         num_workers=num_workers,
         drop_last=drop_last, 
         # collate_fn=collate_fn
     )
+
+    test_dataloader = DataLoader(
+        dataset=test_dataset, 
+        batch_size=batch_size,
+        shuffle=shuffle, 
+        num_workers=num_workers,
+        drop_last=drop_last, 
+    )
+
+    return train_dataloader, test_dataloader

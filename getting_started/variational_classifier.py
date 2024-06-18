@@ -37,7 +37,9 @@ def accuracy(labels, predictions):
 
 def cost(weights, bias, X, Y):
     predictions = [variational_classifier(weights, bias, x) for x in X]
-    return square_loss(Y, predictions)
+    loss = square_loss(Y, predictions)
+    print(loss)
+    return loss 
 
 
 # Data

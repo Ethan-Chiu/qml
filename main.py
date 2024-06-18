@@ -1,10 +1,10 @@
 import argparse
-import torch
 import time
-import torch.nn as nn
 import os
 import random
 from pathlib import Path
+
+import torch
 from tqdm import tqdm
 
 from vggish import VGGish
@@ -17,6 +17,11 @@ from pennylane import numpy as np
 from pennylane.optimize import NesterovMomentumOptimizer
 
 
+# import jax
+# from jax import numpy as jnp
+# import jaxopt
+# jax.config.update("jax_enable_x64", True)
+
 dev = qml.device("default.qubit")
 
 def entangle_all(N):
@@ -27,58 +32,50 @@ def entangle_all(N):
 def layer(N, layer_weights):
     for wire in range(N):
         qml.Rot(*layer_weights[wire], wires=wire)
-    entangle_all(N)
 
 
-@qml.qnode(dev)
-def encoder(N, weights, x):
+def encoder(N, en_w, in_w, x):
     x = x.reshape(-1, N)
     wires = list(range(N))
-    en_w, in_w, _ = weights
-    # circuit
-    for bx in x:
+    
+    # Encode circuit
+    for l, bx in enumerate(x):
         qml.AngleEmbedding(bx, wires=wires)
+        layer(N, en_w[l])
+        entangle_all(N)
+
+    # Middle layers
+    for layer_weights in in_w:
+        layer(N, layer_weights)
         entangle_all(N)
 
 
-    for layer_weights in in_w:
-        layer(N, layer_weights)
-
-    return qml.state()
-
-@qml.qnode(dev)
 def decoder(N, de_w, x):
     x = x.reshape(-1, N)
     wires = list(range(N))
     # circuit
-    for bx in x:
+    for l, bx in enumerate(x):
         qml.AngleEmbedding(bx, wires=wires)
+        layer(N, de_w[l])
         entangle_all(N)
-
-    return qml.state()
 
 
 @qml.qnode(dev)
-def circuit(N, weights, x, y):
-    en_w, in_w, de_w = weights
+def circuit(N, en_w, in_w, de_w, x, y):
+    wires = list(range(N))
 
-    encoder(N, weights, x)
-
+    encoder(N, en_w, in_w, x)
     decoder(N, de_w, y)
 
-    wires = list(range(N))
     return qml.probs(wires=wires)
-
-
-def variational_circuit(N, weights, x, y):
-    return circuit(N, weights, x, y)
 
 def log_prob_loss(prediction):
     # cross entropy when traget is [1, 0, ...]
     return -np.log(prediction[0])
 
-def cost(weights, X, Y, N):
-    predictions = [variational_circuit(N, weights, x, y) for x, y in zip(X, Y)]
+# @jax.jit
+def cost(en_w, in_w, de_w, X, Y, N):
+    predictions = [circuit(N, en_w, in_w, de_w, x, y) for x, y in zip(X, Y)]
     loss = qml.math.stack([log_prob_loss(pred) for pred in predictions])
     loss = np.mean(loss)
     print(loss)
@@ -86,6 +83,7 @@ def cost(weights, X, Y, N):
 
 
 
+# NOTE: validation
 @qml.qnode(dev)
 def decode_state(N, de_w, state, y):
     wires = list(range(N))
@@ -107,12 +105,19 @@ def order_of_element(numbers, i):
     
     return order
 
+
+@qml.qnode(dev)
+def encoder_state(N, en_w, in_w, x):
+    encoder(N, en_w, in_w, x)
+    return qml.state()
+
+
 def retrieval(weights, X, Y, N):
-    _, _, de_w = weights
+    en_w, in_w, de_w = weights
     print("Retrieval test")
     mean_order = []
     for i, x in enumerate(tqdm(X)):
-        f = encoder(N, weights, x)
+        f = encoder_state(N, en_w, in_w, x)
         sims = []
         for y in Y:
             sim = decode_state(N, de_w, f, y)[0]
@@ -121,6 +126,7 @@ def retrieval(weights, X, Y, N):
         mean_order.append(order)
     mean_order = sum(mean_order) / len(mean_order)
     return mean_order
+
 
 
 def main(args):
@@ -160,7 +166,7 @@ def main(args):
 
     # dataset
     batch_size = 8
-    train_dataloader = get_clotho_loader(
+    train_dataloader, val_dataloader = get_clotho_loader(
         Path("/mnt/d/clotho/dataset"), 
         "evaluation", 
         Path("/mnt/d/clotho/csv/clotho_test.csv"), 
@@ -173,14 +179,12 @@ def main(args):
 
     num_qubits = 8
     encoder_layer = 16
-    inter_layers = 2
+    inter_layers = 16
     decoder_layer = 48
 
-    en_w = 0.01 * np.random.randn(encoder_layer, num_qubits, 3, requires_grad=True)
-    in_w = 0.01 * np.random.randn(inter_layers, num_qubits, 3, requires_grad=True)
-    de_w = 0.01 * np.random.randn(decoder_layer, num_qubits, 3, requires_grad=True)
-    weights_init = (en_w, in_w, de_w)
-
+    en_w_init = 0.01 * np.random.randn(encoder_layer, num_qubits, 3, requires_grad=True)
+    in_w_init = 0.01 * np.random.randn(inter_layers, num_qubits, 3, requires_grad=True)
+    de_w_init = 0.01 * np.random.randn(decoder_layer, num_qubits, 3, requires_grad=True)
 
 
     def process_data(batch_data):
@@ -258,7 +262,7 @@ def main(args):
     def validate(w):
         total_a = []
         total_t = []
-        for n_iter, batch_data in enumerate(tqdm(train_dataloader)):
+        for n_iter, batch_data in enumerate(tqdm(val_dataloader)):
             audio_feature, text_feature = process_data(batch_data)
             total_a.append(torch.tensor(audio_feature))
             total_t.append(torch.tensor(text_feature))
@@ -266,16 +270,15 @@ def main(args):
         total_t = torch.cat(total_t, dim=0)
         rank = retrieval(w, X=total_a, Y=total_t, N=num_qubits)
         print("Mean rank is:", rank)
+        return rank
             
 
 
     # Train
     best_epoch = 0
     global_step = 0
-    weights = weights_init
-    # bias = bias_init
-
-    validate(weights)
+    en_w, in_w, de_w = en_w_init, in_w_init, de_w_init
+    weights = (en_w, in_w, de_w)
 
     for epoch in range(100):
         for n_iter, batch_data in enumerate(tqdm(train_dataloader)):
@@ -284,11 +287,14 @@ def main(args):
             # print("audio shape", audio_feature.shape) # 384
             # print("text shape", text_feature.shape)
 
-            weights = opt.step(cost, weights, X=audio_feature, Y=text_feature, N=num_qubits)
+            weights = opt.step(cost, *weights, X=audio_feature, Y=text_feature, N=num_qubits)
 
             global_step += 1
             # logger.info(f"Epoch: {epoch}, Iter: {n_iter}, ")
-        validate(weights)
+            
+        if (epoch + 1) % 15 == 0:
+            rank = validate(weights)
+            logger.info(f"Retrieval rank: {rank}")
         
 
 
@@ -300,8 +306,6 @@ if __name__ == '__main__':
                         default='exp_dir', help='log dir')
     # parser.add_argument('--checkpoint_dir', type=str,
     #                     default='work_dir', help='dir to save checkpoints')
-    # parser.add_argument("--session_name", default="MS3",
-    #                     type=str, help="the MS3 setting")
 
     args = parser.parse_args()
     main(args)
