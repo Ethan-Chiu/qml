@@ -1,6 +1,10 @@
-from tqdm import tqdm
 import pennylane as qml
-from pennylane import numpy as np
+from functools import partial
+
+from jax.config import config
+config.update("jax_enable_x64", True)
+
+import jax.numpy as jnp
 
 
 dev = qml.device("default.qubit")
@@ -41,9 +45,10 @@ def decoder(N, de_w, x):
         entangle_all(N)
 
 
-@qml.qnode(dev)
-def circuit(N, en_w, in_w, de_w, x, y):
-    wires = list(range(N))
+@qml.qnode(dev, interface="jax")
+def circuit(en_w, in_w, de_w, x, y):
+    N = 8
+    wires = jnp.arange(N) 
 
     encoder(N, en_w, in_w, x)
     decoder(N, de_w, y)
@@ -54,12 +59,12 @@ def circuit(N, en_w, in_w, de_w, x, y):
 
 
 # NOTE: validation
-@qml.qnode(dev)
+@qml.qnode(dev, interface="jax")
 def encoder_state(N, en_w, in_w, x):
     encoder(N, en_w, in_w, x)
     return qml.state()
 
-@qml.qnode(dev)
+@qml.qnode(dev, interface="jax")
 def decode_state(N, de_w, state, y):
     wires = list(range(N))
     

@@ -74,3 +74,5 @@ def process_data(batch_data, audio_encoder, text_encoder):
         
 
     return audio_feature, text_feature
+    # print("audio shape", audio_feature.shape) # 128
+    # print("text shape", text_feature.shape) # 384
